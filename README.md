@@ -8,6 +8,9 @@ An end‑to‑end, resumeable data pipeline that ingests podcast metadata from t
 - **Modular architecture**: Clean separation of concerns (`pipeline`, `persistence`, `snipd_api`, `config`).
 - **Simple operational model**: One command to run; sensible defaults; clear logs.
 
+- **Async I/O where it matters**: Non‑blocking HTTP via `aiohttp` with persistent sessions, timeouts, and retries; the pipeline uses `asyncio` under the hood while preserving sequential processing and checkpoint semantics.
+- **uv for dependency management**: Fast installs and virtualenv management with `uv` (pip fallback provided).
+
 ### What it does
 - Fetches top podcast shows from Snipd and saves them to `data/top_shows.csv` and `data/top_shows.json`.
 - Iterates every top show to fetch episodes, then fetches each episode by id and writes one JSON document per line to `data/episodes.jsonl`.
@@ -29,22 +32,41 @@ flowchart TD
 
 ### Key modules
 - `main.py`: Minimal entry point that instantiates and runs the pipeline.
-- `pipeline.py`: Orchestrates the end‑to‑end flow with clear, testable methods.
+- `pipeline.py`: Orchestrates the end‑to‑end flow with clear, testable methods. Public `run()` remains sync, backed by an internal async runner.
 - `persistence.py`: Reliable persistence layer (`DataSaver`) and resume system (`CheckpointManager`).
-- `snipd_api.py`: Thin API client for Snipd GraphQL endpoints.
+- `snipd_api.py`: Async API client using `aiohttp` with retries and timeouts for Snipd GraphQL endpoints.
 - `config.py`: Centralized configuration (API URL, headers, GraphQL queries, data directory).
 
 ## Quickstart
 
 ### Prerequisites
 - Python 3.10+
-- pip (and optionally venv/conda for isolation)
+- uv (recommended) or pip
 
 ### Install
+
+Using uv (recommended)
+```bash
+# Install uv (choose one)
+# pipx install uv     # recommended
+# OR: pip install uv
+
+# Create and activate virtualenv
+uv venv .venv
+. .venv/bin/activate   # Windows PowerShell: .venv\\Scripts\\Activate.ps1
+
+# Install dependencies
+# If a requirements.txt exists:
+uv pip install -r requirements.txt
+# If not, install packages directly:
+uv pip install aiohttp pandas
+```
+
+Fallback using pip
 ```bash
 python -m venv .venv
-. .venv/bin/activate   # On Windows: .venv\\Scripts\\activate
-pip install -r requirements.txt
+. .venv/bin/activate   # Windows: .venv\\Scripts\\activate
+pip install aiohttp pandas
 ```
 
 ### Run
@@ -79,16 +101,21 @@ Tuning the fetch sizes (defaults in code):
 - The pipeline logs progress at INFO level. Adjust via `logging.basicConfig(level=logging.INFO)` in `main.py`.
 - If interrupted or if an exception occurs, re‑running resumes from the last saved checkpoint.
 - To restart from scratch, delete `data/checkpoint.json` and rerun.
+ - Network calls are async; episodes are processed sequentially to preserve ordering and checkpointing behavior.
 
 ## Project structure
 ```
-snipd/
-  ├─ config.py              # Configuration and GraphQL queries
-  ├─ main.py                # Minimal entrypoint
-  ├─ pipeline.py            # SnipdPipeline orchestration
-  ├─ persistence.py         # DataSaver + CheckpointManager + atomic I/O
-  ├─ snipd_api.py           # Snipd GraphQL client
-  └─ data/                  # Outputs (created at runtime)
+.
+  ├─ main.py                  # Minimal entrypoint
+  ├─ README.md                # Project docs
+  ├─ pyproject.toml           # Project metadata + dependencies (uv/pip)
+  ├─ .python-version          # Python version pin (optional)
+  ├─ snipd_pipeline/          # Library package
+  │  ├─ config.py             # Configuration and GraphQL queries
+  │  ├─ pipeline.py           # SnipdPipeline orchestration (async under the hood)
+  │  ├─ persistence.py        # DataSaver + CheckpointManager + atomic I/O
+  │  └─ snipd_api.py          # Async Snipd GraphQL client (aiohttp)
+  └─ data/                    # Outputs (created at runtime)
      ├─ top_shows.csv
      ├─ top_shows.json
      ├─ episodes.jsonl
@@ -105,7 +132,7 @@ snipd/
 - CLI flags (e.g., `--reset`, `--limit`, `--offset`, `--resume-from`).
 - Backoff, retries, and HTTP timeouts per endpoint.
 - Idempotency/deduplication safeguards for episodes.
-- Parallelism by show or by episode batch with backpressure and rate‑limit awareness.
+- Optional bounded concurrency for episode fetches with backpressure and ordering‑safe writes.
 - Structured logging and metrics (e.g., OpenTelemetry).
 
 ## Considerations
