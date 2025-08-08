@@ -1,14 +1,13 @@
 import logging
 
-from config import data_dir
-from pipeline import SnipdPipeline
+from snipd_pipeline.pipeline import SnipdPipeline
 
 
 logging.basicConfig(level=logging.INFO)
 
 
 def main() -> None:
-    pipeline = SnipdPipeline(data_dir)
+    pipeline = SnipdPipeline()
     pipeline.run()
 
 
