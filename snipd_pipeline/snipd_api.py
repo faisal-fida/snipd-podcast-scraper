@@ -3,7 +3,7 @@ import copy
 from typing import Any, Dict, List, Optional
 
 import aiohttp
-from aiohttp import ClientResponseError, ClientTimeout
+from aiohttp import ClientResponseError, ClientTimeout, TCPConnector
 
 from snipd_pipeline.config import (
     api_url,
@@ -20,6 +20,9 @@ class SnipdAPI:
         self.api_url = api_url
         self._session: Optional[aiohttp.ClientSession] = None
         self._timeout = ClientTimeout(total=30)
+        # Delay connector creation to async context to avoid no running loop error
+        self._connector_args = {"limit": 100, "enable_cleanup_closed": True}
+        self._connector = None
 
     async def __aenter__(self) -> "SnipdAPI":
         await self._ensure_session()
@@ -32,7 +35,11 @@ class SnipdAPI:
 
     async def _ensure_session(self) -> None:
         if self._session is None:
-            self._session = aiohttp.ClientSession(timeout=self._timeout)
+            # Instantiate connector within running event loop
+            connector = TCPConnector(**self._connector_args)
+            self._session = aiohttp.ClientSession(
+                timeout=self._timeout, connector=connector
+            )
 
     async def close(self) -> None:
         """Public close method to explicitly close the underlying session."""
@@ -44,12 +51,13 @@ class SnipdAPI:
         await self._ensure_session()
         assert self._session is not None
 
+        url = f"{self.api_url}/public/graphql"
         attempt = 0
         last_exc: Optional[Exception] = None
-        while attempt < 3:
+        while attempt < 5:
             try:
                 async with self._session.post(
-                    f"{self.api_url}/public/graphql",
+                    url,
                     headers=self.headers,
                     json=json_payload,
                 ) as resp:
@@ -62,9 +70,17 @@ class SnipdAPI:
             ) as exc:  # noqa: TRY003
                 last_exc = exc
                 attempt += 1
-                # Exponential backoff with jitter
-                await asyncio.sleep(min(1.0 * (2 ** (attempt - 1)), 4.0))
-        # If all retries failed, re-raise the last exception
+                base = 0.5
+                cap = 8.0
+                import logging as _log
+
+                _log.warning(f"HTTP error on attempt {attempt}: {exc}")
+                # Jittered exponential backoff
+                import random as _r
+
+                backoff = min(cap, base * (2 ** (attempt - 1)))
+                jitter = _r.uniform(0, backoff / 2)
+                await asyncio.sleep(backoff + jitter)
         assert last_exc is not None
         raise last_exc
 

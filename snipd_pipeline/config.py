@@ -1,6 +1,10 @@
 data_dir = "data"
 api_url = "https://api.snipd.com/v1"
 
+# Concurrency controls (opt-in for safety)
+concurrency_enabled = False
+max_in_flight_episode_requests = 10
+
 headers = {
     "accept": "application/json",
     "content-type": "application/json",

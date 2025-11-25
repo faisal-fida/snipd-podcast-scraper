@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import os
+import time
 from typing import Any, Dict, List
 
 from snipd_pipeline.config import data_dir
@@ -16,6 +17,7 @@ class SnipdPipeline:
         self.snipd_api = SnipdAPI()
         self.data_saver = DataSaver(data_dir)
         self.checkpoint = CheckpointManager(os.path.join(data_dir, "checkpoint.json"))
+        self.checkpoint._tail_truncate_partial_line(data_dir)
 
     def _save(self, state: State, **updates: Any) -> None:
         """
@@ -48,9 +50,14 @@ class SnipdPipeline:
         """
         episode_id = episodes[episode_index].get("id")
         logging.info(f"Getting episode by id: {episode_id}")
+        start_ts = time.perf_counter()
         try:
             episode_by_id = await self.snipd_api.get_episode_by_id(
                 episode_id=episode_id
+            )
+            elapsed = (time.perf_counter() - start_ts) * 1000.0
+            logging.info(
+                f"Episode fetched id={episode_id} show={show_id} idx={episode_index} t_ms={elapsed:.1f}"
             )
             self.data_saver.append_episodes(episode_by_id)
             self._save(
@@ -61,7 +68,10 @@ class SnipdPipeline:
             )
             return True
         except Exception as exc:  # noqa: BLE001
-            logging.exception(f"Failed processing episode {episode_id}: {exc}")
+            elapsed = (time.perf_counter() - start_ts) * 1000.0
+            logging.exception(
+                f"Failed processing episode id={episode_id} show={show_id} idx={episode_index} t_ms={elapsed:.1f}: {exc}"
+            )
             self._save(
                 state,
                 current_show_id=show_id,
@@ -95,12 +105,41 @@ class SnipdPipeline:
                 state, current_show_id=show_id, episode_index=0, show_index=show_index
             )
 
-        # Process episodes sequentially to preserve checkpoint semantics, but
-        # use async I/O per request for efficiency.
-        for episode_index in range(start, len(episodes)):
-            if not await self._process_episode(
-                show_id, show_index, episode_index, episodes, state
-            ):
+        # Process episodes sequentially or with bounded concurrency (preserving ordered writes)
+        async def _run_sequential() -> bool:
+            for episode_index in range(start, len(episodes)):
+                if not await self._process_episode(
+                    show_id, show_index, episode_index, episodes, state
+                ):
+                    return False
+            return True
+
+        async def _run_concurrent(max_in_flight: int) -> bool:
+            sem = asyncio.Semaphore(max_in_flight)
+
+            async def worker(idx: int) -> bool:
+                async with sem:
+                    return await self._process_episode(
+                        show_id, show_index, idx, episodes, state
+                    )
+
+            tasks = [asyncio.create_task(worker(i)) for i in range(start, len(episodes))]
+            for t in tasks:
+                ok = await t
+                if not ok:
+                    for pending in tasks:
+                        if not pending.done():
+                            pending.cancel()
+                    return False
+            return True
+
+        from snipd_pipeline import config as _cfg
+        if getattr(_cfg, "concurrency_enabled", False):
+            max_in_flight = int(getattr(_cfg, "max_in_flight_episode_requests", 10) or 10)
+            if not await _run_concurrent(max_in_flight):
+                return False
+        else:
+            if not await _run_sequential():
                 return False
 
         # Finished all episodes for this show; advance to next show
