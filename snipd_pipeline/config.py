@@ -1,3 +1,5 @@
+import os
+
 data_dir = "data"
 api_url = "https://api.snipd.com/v1"
 
@@ -9,7 +11,7 @@ headers = {
     "accept": "application/json",
     "content-type": "application/json",
     "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36",
-    "x-api-key": "AIzaSyDqEfh597HW-7dl2j_YxECwSjbNZ9bs93U",
+    "x-api-key": os.environ["SNIPD_API_KEY"],
 }
 
 json_data_shows = {

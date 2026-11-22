@@ -1,4 +1,6 @@
 __pycache__/
 data/*
 .venv
-.crush/
+.crush/.env
+*.pem
+*.key
